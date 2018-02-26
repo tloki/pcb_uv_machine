@@ -1,0 +1,22 @@
+add some smart refractoring
+split into library
+add buzzer support
+add comments...
+add fritzing wiring scheme
+add dependencies
+implement stopwatch/countdown routine
+implement permanent flash time storage (3 Bytes)
+add relay to pin 13
+
+refractoring:
+add macro constants to pins (buttons + display pins)
+inc, dec routines to prevent repeating code
+remove overchecking input data
+
+else:
+make a PCBExpress scheme for wiring
+enable USB port bridge for further software support
+add IEC320 socket connector + Xiaomi USB power supply
+add UV lights (http://www.electronic-center.hr/zarulje/fluo-cijevi/fluo-tl6w-08.html)
+add "balasts" for regulating start current
+test buttons
