@@ -8,70 +8,74 @@
 #define FAST_CHANGE_DELAY_MS 1000
 #define FAST_CHANGE_PERIOD_MS 120
 #define DELAY_DEBOUNCE_MS 150
+#define SERIAL_DEBUG
+#define START_DELAY_MS 1000
+#define UV_RELAY_PIN 13
 
 #define FIX_NEG(A, MAX) (((A) < 0)?MAX-1:A)
 
-// LCD pin ponfig
+// LCD pin config
 const int d4 = 2, d5 = 3, d6 = 4, d7 = 5;
 const int rs = 6, e = 7;
-
 LiquidCrystal lcd(rs, e, d4, d5, d6, d7);
 
 int pinStartStop = 8;
 int pinPlus = 9;
 int pinMinus = 10;
 int pinSelect = 11;
-int8_t h = 0, m = 10, s = 0;
+
+int8_t h = 0, m = 0, s = 0;
 int select = 0;
 
-void setup() {
-    Serial.begin(115200);
-    
-    lcd.begin(16, 2);
-    lcd.print("set exposure");
-    lcd.setCursor(0, 1);
-    lcd.print("time: ");
-    delay(1000);
-    
-    digitalWrite(pinStartStop, HIGH);
-    digitalWrite(pinPlus, HIGH);
-    digitalWrite(pinMinus, HIGH);
-    digitalWrite(pinSelect, HIGH);
-    
-    pinMode(pinStartStop, INPUT_PULLUP);
-    pinMode(pinPlus, INPUT_PULLUP);
-    pinMode(pinMinus, INPUT_PULLUP);
-    pinMode(pinSelect, INPUT_PULLUP);
-    
-    digitalWrite(pinStartStop, HIGH);
-    digitalWrite(pinPlus, HIGH);
-    digitalWrite(pinMinus, HIGH);
-    digitalWrite(pinSelect, HIGH);
-}
+bool buttonPress = true;
+
+unsigned long lastSelect = 0;
+unsigned long lastPressedSelect = 0;
+unsigned long lastPressedPlus = 0;
+unsigned long lastPressedMinus = 0;
+unsigned long lastPressedStartStop = 0;
+
+bool lastPlusValue = false;
+bool lastMinusValue = false;
+bool lastSelectValue = false;
+bool lastStartStopValue = false;
+
+bool exposureStarted = false;
 
 String generateHMSString(){
-    h = h % 100;
-    m = m % 60;
-    s = s % 60;
     char output[] = "00:00:00";
     sprintf(output, "%02d:%02d:%02d", h, m, s);
     return String(output);
 }
 
-String generateHMSStringBlink(int segment){
-    segment = segment % 3;
-    
-    h = h % 100;
-    m = m % 60;
-    s = s % 60;
-    char output[] = "00:00:00";
+void increaseValue(){
+    switch(select){
+        case 0: h++; h %= 100; break;
+        case 1: m++; m %=  60; break;
+        case 2: s++; s %=  60; break;
+    }
+    return;
+}
 
+void decreaseValue(){
+    switch(select){
+        case 0: h--; h = FIX_NEG(h, 100); break;
+        case 1: m--; m = FIX_NEG(m, 60 ); break;
+        case 2: s--; s = FIX_NEG(s, 60 ); break;
+    }    
+}
+
+void changeSegment(){
+    select = (select + 1) % 3;
+}
+
+String generateHMSStringBlink(int segment){
+    char output[] = "00:00:00";
     switch(segment){
         case 0: sprintf(output, "  :%02d:%02d", m, s); break;
         case 1: sprintf(output, "%02d:  :%02d", h, s); break;
         case 2: sprintf(output, "%02d:%02d:  ", h, m); break;
     }
-    
     return String(output);
 }
 
@@ -86,19 +90,164 @@ void refreshTimeBlink(int segment){
     lcd.print(generateHMSStringBlink(segment));
 }
 
+bool isInStopwatchMode(){
+    return (h == 0 && m == 0 && s == 0);
+}
 
-unsigned long lastPressedSelect = 0;
-unsigned long lastPressedPlus = 0;
-unsigned long lastPressedMinus = 0;
-unsigned long lastPressedStart = 0;
+String hms(unsigned long time_seconds){
+    int h = (time_seconds / 3600) % 100;
+    int remaining = time_seconds % 3600;
+    int m = remaining / 60;
+    int s = remaining % 60;
 
-bool lastPlusValue = false;
-bool lastMinusValue = false;
-bool lastSelectValue = false;
+    char format[] = "00:00:00";
+    sprintf(format, "%02d:%02d:%02d", h, m, s);
+    
+    return String(format);
+}
+
+void displayMenu(){
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("set exposure");
+    lcd.setCursor(0, 1);
+    lcd.print("time: ");
+}
+
+void turnON(){
+    digitalWrite(UV_RELAY_PIN, HIGH);
+}
+
+void turnOFF(){
+    digitalWrite(UV_RELAY_PIN, LOW);
+}
+
+void stopwatchMode(){
+    unsigned long stopwatchStartTime = millis();
+    int row = 0;
+    int col = 0;
+
+    turnON();
+    
+    lcd.clear();
+    lcd.setCursor(col, row);
+    lcd.print("[stopwatch mode]");
+    row = 1;
+    col = 4;
+    lcd.setCursor(col, row);
+
+    lcd.print(hms((millis()/1000) - (stopwatchStartTime/1000)));
+    delay(START_DELAY_MS);
+
+    row = 0;
+    col = 0;
+    lcd.setCursor(col, row);
+    lcd.print(" elapsed time:  ");
+    
+    row = 1;
+    col = 4;
+    lcd.setCursor(col, row);
+
+    String lastTime = hms((millis()/1000) - (stopwatchStartTime/1000));
+    
+    while(!detectStopButton()){
+        String now;
+        if((now = hms((millis()/1000) - (stopwatchStartTime/1000))) != lastTime){
+            Serial.println("Time changed: " + now);
+            lcd.print(now);
+            lastTime = now;
+            lcd.setCursor(col, row);
+        }
+    }
+    turnOFF();
+    return;
+}
+
+unsigned long getSecondsFromHMS(){
+    return (unsigned long) (h * 3600 + m * 60 + s);
+}
+
+void countdownMode(){
+    unsigned long stopwatchStartTime = millis();
+    int row = 0;
+    int col = 0;
+
+    turnON();
+    
+    lcd.clear();
+    lcd.setCursor(col, row);
+    lcd.print("[countdown mode]");
+    row = 1;
+    col = 4;
+    lcd.setCursor(col, row);
+
+    lcd.print(hms(getSecondsFromHMS()));
+    delay(START_DELAY_MS);
+
+    row = 0;
+    col = 0;
+    lcd.setCursor(col, row);
+    lcd.print("remaining time: ");
+    
+    row = 1;
+    col = 4;
+    lcd.setCursor(col, row);
+
+    String lastTime = hms((millis()/1000) - (stopwatchStartTime/1000));
+    
+    while(!detectStopButton() && ((millis() - stopwatchStartTime) <= (getSecondsFromHMS()*1000))){
+        String now;
+        if((now = hms((millis()/1000) - (stopwatchStartTime/1000))) != lastTime){
+            Serial.println("Time changed: " + now);
+
+            unsigned long elapsedMillis = millis() - stopwatchStartTime;
+            unsigned long elapsedSeconds = elapsedMillis / 1000;
+            unsigned long startSeconds = getSecondsFromHMS();
+            int remaining = startSeconds - elapsedSeconds;
+            
+            lcd.print(hms(remaining));
+            lastTime = now;
+            lcd.setCursor(col, row);
+        }
+    }
+    turnOFF();
+    return;
+}
 
 void startExposure(){
-    while(1);
+    Serial.println("exposure started");
+
+    if(isInStopwatchMode()){
+        Serial.println("stopwatch mode started");
+        stopwatchMode();
+        Serial.println("stopwatch mode stopped");
+    }
+    else{
+        Serial.println("timer mode stared");
+        countdownMode();
+        Serial.println("timer mode ended");
+    }
+
+    displayMenu();
     return;    
+}
+
+bool detectStopButton(){
+    bool startStopButton = (digitalRead(pinStartStop) == LOW);
+    
+    if(startStopButton && (lastStartStopValue == false)){
+        Serial.println("stop pressed!");
+        lastStartStopValue = true;
+        delay(DELAY_DEBOUNCE_MS);
+        return false;
+    }
+    if((startStopButton == false) && (lastStartStopValue == true)){
+        Serial.println("start released");
+        lastStartStopValue = false;
+        return true;
+    }
+    lastStartStopValue = startStopButton;
+    return false;
 }
 
 bool detectButtonPress(){
@@ -114,7 +263,6 @@ bool detectButtonPress(){
     
     if(selectButton && (lastSelectValue == false)){
         Serial.println("select pressed!");
-        //lastPressedSelect = millis();
         select++;
         select %= 3;
         lastSelectValue = true;
@@ -132,14 +280,9 @@ bool detectButtonPress(){
         Serial.println("plus pressed!");
         lastPressedPlus = millis();
         
-        switch(select){
-             case 0: h++; h %= 100; break;
-             case 1: m++; m %=  60; break;
-             case 2: s++; s %=  60; break;
-        }
+        increaseValue();
         refreshTime();
         lastPlusValue = true;
-        //delay(PLUS_BUTTON_DELAY_MS);
         delay(DELAY_DEBOUNCE_MS);
         return true;
     }
@@ -149,11 +292,7 @@ bool detectButtonPress(){
         while(true){
             bool plusButton = (digitalRead(pinPlus) == LOW);
             Serial.println(plusButton);
-            switch(select){
-                case 0: h++; h %= 100; break;
-                case 1: m++; m %=  60; break;
-                case 2: s++; s %=  60; break;
-            }
+            increaseValue();
             refreshTime();
             delay(FAST_CHANGE_PERIOD_MS);
             if(plusButton == false) break;
@@ -173,14 +312,9 @@ bool detectButtonPress(){
     ///////////////////////////////////
     
     if(minusButton && (lastMinusValue == false)){
-        //Serial.println("minus pressed!");
+        Serial.println("minus pressed!");
         lastPressedMinus = millis();
-        
-        switch(select){
-                case 0: h--; h = FIX_NEG(h, 100); break;
-                case 1: m--; m = FIX_NEG(m, 60 ); break;
-                case 2: s--; s = FIX_NEG(s, 60 ); break;
-            }
+        decreaseValue();
         refreshTime();
         lastMinusValue = true;
         delay(DELAY_DEBOUNCE_MS);
@@ -191,11 +325,7 @@ bool detectButtonPress(){
         int iter = 0;
         while(true){
             bool minusButton = (digitalRead(pinMinus) == LOW);
-            switch(select){
-                case 0: h--; h = FIX_NEG(h, 100); break;
-                case 1: m--; m = FIX_NEG(m, 60 ); break;
-                case 2: s--; s = FIX_NEG(s, 60 ); break;
-            }
+            decreaseValue();
             refreshTime();
             delay(FAST_CHANGE_PERIOD_MS);
             if(minusButton == false) break;
@@ -209,12 +339,55 @@ bool detectButtonPress(){
     
     if((minusButton == false) && (lastMinusValue == true)) Serial.println("minus released");
     lastMinusValue = minusButton;
+
+
+    ///////////////////////////////////
+    //////// start/stop button ////////
+    ///////////////////////////////////
+    
+    if(startStopButton && (lastStartStopValue == false)){
+        Serial.println("start pressed!");
+        lastStartStopValue = true;
+        delay(DELAY_DEBOUNCE_MS);
+        return true;
+    }
+    if((startStopButton == false) && (lastStartStopValue == true)){
+        Serial.println("start released");
+        lastStartStopValue = false;
+        startExposure();
+    }
+    lastStartStopValue = startStopButton;
     
     return false;
 }
 
-bool buttonPress = true;
-unsigned long lastSelect = 0;
+void setup() {
+    pinMode(UV_RELAY_PIN, OUTPUT);
+    digitalWrite(UV_RELAY_PIN, LOW);
+    
+    #ifdef SERIAL_DEBUG
+    Serial.begin(115200);
+    #endif
+    
+    lcd.begin(16, 2);
+    displayMenu();
+    
+    digitalWrite(pinStartStop, HIGH);
+    digitalWrite(pinPlus, HIGH);
+    digitalWrite(pinMinus, HIGH);
+    digitalWrite(pinSelect, HIGH);
+    
+    pinMode(pinStartStop, INPUT_PULLUP);
+    pinMode(pinPlus, INPUT_PULLUP);
+    pinMode(pinMinus, INPUT_PULLUP);
+    pinMode(pinSelect, INPUT_PULLUP);
+    
+    digitalWrite(pinStartStop, HIGH);
+    digitalWrite(pinPlus, HIGH);
+    digitalWrite(pinMinus, HIGH);
+    digitalWrite(pinSelect, HIGH);
+}
+
 
 void loop() {
     
@@ -234,8 +407,7 @@ void loop() {
     }
     else{
         if((millis() - lastSelect) > SELECTION_BLINK_PAUSE_MS){
-            refreshTimeBlink(select);    
-            //refreshTime();
+            refreshTimeBlink(select);
         }
         else{
             refreshTime();
@@ -248,4 +420,3 @@ void loop() {
         if(buttonPress) break;
     }
 }
-
